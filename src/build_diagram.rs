@@ -72,6 +72,16 @@ pub struct DiagramConfig<'a> {
     pub layout: &'a str,
     pub theme: &'a str,
     pub elk_node_placement: &'a str,
+    /// Path to the Rust source directory to scan.
+    pub src_dir: &'a Path,
+    /// Directory where the generated Mermaid files will be written.
+    pub out_dir: &'a Path,
+}
+
+fn default_manifest_dir() -> PathBuf {
+    env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 impl<'a> Default for DiagramConfig<'a> {
@@ -82,6 +92,8 @@ impl<'a> Default for DiagramConfig<'a> {
             layout: "elk",
             theme: "dark",
             elk_node_placement: "BRANDES_KOEPF",
+            src_dir: Path::new("src"),
+            out_dir: Path::new("diagrams"),
         }
     }
 }
@@ -90,13 +102,29 @@ impl<'a> Default for DiagramConfig<'a> {
 ///
 /// `config` controls the title / layout / theme of the generated Mermaid files.
 pub fn generate_diagrams_with_config(config: &DiagramConfig<'_>) -> Result<()> {
-    println!("cargo:rerun-if-changed=src/");
-
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_rust::language())?;
 
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
-    let src_path = std::path::Path::new(&manifest_dir).join("src");
+    let manifest_dir = default_manifest_dir();
+
+    // If src_dir/out_dir in config are empty (from Default), fall back to
+    // manifest-based paths.
+    let src_path_buf;
+    let out_path_buf;
+
+    let src_path: &Path = if config.src_dir.as_os_str().is_empty() {
+        src_path_buf = manifest_dir.join("src");
+        &src_path_buf
+    } else {
+        config.src_dir
+    };
+
+    let out_path: &Path = if config.out_dir.as_os_str().is_empty() {
+        out_path_buf = manifest_dir.clone();
+        &out_path_buf
+    } else {
+        config.out_dir
+    };
 
     let mut classes: HashMap<String, Class> = HashMap::new();
     let mut file_functions_main: HashMap<String, Vec<FunctionInfo>> = HashMap::new();
@@ -104,19 +132,19 @@ pub fn generate_diagrams_with_config(config: &DiagramConfig<'_>) -> Result<()> {
     let mut local_types = HashSet::new();
 
     // FIRST PASS: collect all local types
-    for file in rust_files(&src_path) {
+    for file in rust_files(src_path) {
         let content = fs::read_to_string(&file)?;
         let tree = parser.parse(&content, None).unwrap();
         collect_type_names(tree.root_node(), &content, &mut local_types);
     }
 
     // SECOND PASS: extract
-    for file in rust_files(&src_path) {
+    for file in rust_files(src_path) {
         let content = fs::read_to_string(&file)?;
         let tree = parser.parse(&content, None).unwrap();
 
         let rel_path = file
-            .strip_prefix(&src_path)
+            .strip_prefix(src_path)
             .unwrap_or(&file)
             .to_string_lossy()
             .to_string();
@@ -288,21 +316,32 @@ config:\n  title: {title}\n  layout: {layout}\n  theme: {theme}\n  elk:\n    mer
         mermaid_tests.push_str(&note);
     }
 
-    fs::write(
-        std::path::Path::new(&manifest_dir).join("diagram.mmd"),
-        mermaid_main,
-    )?;
-    fs::write(
-        std::path::Path::new(&manifest_dir).join("diagram_tests.mmd"),
-        mermaid_tests,
-    )?;
+    fs::create_dir_all(out_path)?;
+
+    fs::write(out_path.join("diagram.mmd"), mermaid_main)?;
+    fs::write(out_path.join("diagram_tests.mmd"), mermaid_tests)?;
 
     Ok(())
 }
 
 /// Backwards-compatible helper using default config.
 pub fn generate_diagrams() -> Result<()> {
-    generate_diagrams_with_config(&DiagramConfig::default())
+    // Build a real config with owned paths, then pass references.
+    let manifest_dir = default_manifest_dir();
+    let src_dir_buf = manifest_dir.join("src");
+    let out_dir_buf = manifest_dir;
+
+    let cfg = DiagramConfig {
+        main_title: "Project",
+        tests_title: "Project Tests",
+        layout: "elk",
+        theme: "dark",
+        elk_node_placement: "BRANDES_KOEPF",
+        src_dir: &src_dir_buf,
+        out_dir: &out_dir_buf,
+    };
+
+    generate_diagrams_with_config(&cfg)
 }
 
 fn rust_files(path: &Path) -> Vec<PathBuf> {
