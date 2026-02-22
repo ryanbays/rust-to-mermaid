@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.102"
+tree-sitter = "0.26.5"
+tree-sitter-rust = "0.20.0"
+walkdir = "2.5.0"
 
 [lib]
-path = "lib.rs"
+path = "src/lib.rs"

@@ -20,6 +20,12 @@ struct Class {
     trait_impls: BTreeSet<String>,
 }
 
+struct FunctionInfo {
+    name: String,
+    /// First doc-comment line for this function, if present.
+    doc: Option<String>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Relationship {
     source: String,
@@ -41,11 +47,11 @@ impl Class {
         s.push_str(&format!("            <<{}>>\n", self.file));
 
         for f in &self.fields {
-            s.push_str(&format!("            +{}\n", f));
+            s.push_str(&format!("            {}\n", f));
         }
 
         for m in &self.methods {
-            s.push_str(&format!("            +{}()\n", m));
+            s.push_str(&format!("            {}()\n", m));
         }
 
         s.push_str("        }\n");
@@ -87,14 +93,14 @@ pub fn generate_diagrams_with_config(config: &DiagramConfig<'_>) -> Result<()> {
     println!("cargo:rerun-if-changed=src/");
 
     let mut parser = Parser::new();
-    parser.set_language(tree_sitter_rust::language())?;
+    parser.set_language(&tree_sitter_rust::language())?;
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
     let src_path = std::path::Path::new(&manifest_dir).join("src");
 
     let mut classes: HashMap<String, Class> = HashMap::new();
-    let mut file_functions_main: HashMap<String, Vec<String>> = HashMap::new();
-    let mut file_functions_tests: HashMap<String, Vec<String>> = HashMap::new();
+    let mut file_functions_main: HashMap<String, Vec<FunctionInfo>> = HashMap::new();
+    let mut file_functions_tests: HashMap<String, Vec<FunctionInfo>> = HashMap::new();
     let mut local_types = HashSet::new();
 
     // FIRST PASS: collect all local types
@@ -218,7 +224,11 @@ config:\n  title: {title}\n  layout: {layout}\n  theme: {theme}\n  elk:\n    mer
         mermaid_main.push_str(&format!("    namespace `{}` {{\n", ns_title));
         mermaid_main.push_str(&format!("        class `{}_functions` {{\n", file_module));
         for f in funcs {
-            mermaid_main.push_str(&format!("            +{}()\n", f));
+            if let Some(doc) = &f.doc {
+                mermaid_main.push_str(&format!("            {}() {}\n", f.name, doc));
+            } else {
+                mermaid_main.push_str(&format!("            {}()\n", f.name));
+            }
         }
         mermaid_main.push_str("        }\n");
         mermaid_main.push_str("    }\n");
@@ -260,7 +270,11 @@ config:\n  title: {title}\n  layout: {layout}\n  theme: {theme}\n  elk:\n    mer
         mermaid_tests.push_str(&format!("    namespace `{}` {{\n", ns_title));
         mermaid_tests.push_str(&format!("        class `{}_functions` {{\n", file_module));
         for f in funcs {
-            mermaid_tests.push_str(&format!("            +{}()\n", f));
+            if let Some(doc) = &f.doc {
+                mermaid_tests.push_str(&format!("            {}() {}\n", f.name, doc));
+            } else {
+                mermaid_tests.push_str(&format!("            {}()\n", f.name));
+            }
         }
         mermaid_tests.push_str("        }\n");
         mermaid_tests.push_str("    }\n");
@@ -357,8 +371,8 @@ fn extract_items(
     file_module: &str,
     local_types: &HashSet<String>,
     classes: &mut HashMap<String, Class>,
-    file_functions_main: &mut HashMap<String, Vec<String>>,
-    file_functions_tests: &mut HashMap<String, Vec<String>>,
+    file_functions_main: &mut HashMap<String, Vec<FunctionInfo>>,
+    file_functions_tests: &mut HashMap<String, Vec<FunctionInfo>>,
 ) {
     let mut cursor = node.walk();
 
@@ -501,17 +515,23 @@ fn extract_items(
             "function_item" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let func_name = name_node.utf8_text(src.as_bytes()).unwrap().to_string();
+                    let doc = leading_doc_comment(child, src);
+
+                    let info = FunctionInfo {
+                        name: func_name,
+                        doc,
+                    };
 
                     if has_test_attribute(child, src) {
                         file_functions_tests
                             .entry(file_module.into())
                             .or_default()
-                            .push(func_name);
+                            .push(info);
                     } else {
                         file_functions_main
                             .entry(file_module.into())
                             .or_default()
-                            .push(func_name);
+                            .push(info);
                     }
                 }
             }
