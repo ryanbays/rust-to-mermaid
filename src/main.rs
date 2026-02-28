@@ -1,4 +1,5 @@
 mod build_diagram;
+mod parse;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -62,4 +63,3 @@ fn main() {
         std::process::exit(1);
     }
 }
-
