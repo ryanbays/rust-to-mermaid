@@ -24,6 +24,10 @@ struct FunctionInfo {
     name: String,
     /// First doc-comment line for this function, if present.
     doc: Option<String>,
+    /// Parameter list as rendered strings ("x: i32", "y: String", ...)
+    params: Vec<String>,
+    /// Return type as rendered string ("usize", "Result<T>", ...)
+    ret: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -252,10 +256,20 @@ config:\n  title: {title}\n  layout: {layout}\n  theme: {theme}\n  elk:\n    mer
         mermaid_main.push_str(&format!("    namespace `{}` {{\n", ns_title));
         mermaid_main.push_str(&format!("        class `{}_functions` {{\n", file_module));
         for f in funcs {
-            if let Some(doc) = &f.doc {
-                mermaid_main.push_str(&format!("            {}() {}\n", f.name, doc));
+            let param_list = if f.params.is_empty() {
+                "".to_string()
             } else {
-                mermaid_main.push_str(&format!("            {}()\n", f.name));
+                f.params.join(", ")
+            };
+            let sig = if let Some(ret) = &f.ret {
+                format!("{} {}({})", ret, f.name, param_list)
+            } else {
+                format!("{}({})", f.name, param_list)
+            };
+            if let Some(doc) = &f.doc {
+                mermaid_main.push_str(&format!("            {} {}\n", sig, doc));
+            } else {
+                mermaid_main.push_str(&format!("            {}\n", sig));
             }
         }
         mermaid_main.push_str("        }\n");
@@ -298,10 +312,20 @@ config:\n  title: {title}\n  layout: {layout}\n  theme: {theme}\n  elk:\n    mer
         mermaid_tests.push_str(&format!("    namespace `{}` {{\n", ns_title));
         mermaid_tests.push_str(&format!("        class `{}_functions` {{\n", file_module));
         for f in funcs {
-            if let Some(doc) = &f.doc {
-                mermaid_tests.push_str(&format!("            {}() {}\n", f.name, doc));
+            let param_list = if f.params.is_empty() {
+                "".to_string()
             } else {
-                mermaid_tests.push_str(&format!("            {}()\n", f.name));
+                f.params.join(", ")
+            };
+            let sig = if let Some(ret) = &f.ret {
+                format!("{} {}({})", ret, f.name, param_list)
+            } else {
+                format!("{}({})", f.name, param_list)
+            };
+            if let Some(doc) = &f.doc {
+                mermaid_tests.push_str(&format!("            {} {}\n", sig, doc));
+            } else {
+                mermaid_tests.push_str(&format!("            {}\n", sig));
             }
         }
         mermaid_tests.push_str("        }\n");
@@ -555,10 +579,14 @@ fn extract_items(
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let func_name = name_node.utf8_text(src.as_bytes()).unwrap().to_string();
                     let doc = leading_doc_comment(child, src);
+                    let params = extract_function_params(child, src);
+                    let ret = extract_function_return_type(child, src);
 
                     let info = FunctionInfo {
                         name: func_name,
                         doc,
+                        params,
+                        ret,
                     };
 
                     if has_test_attribute(child, src) {
@@ -601,6 +629,67 @@ fn extract_type_identifiers(node: Node, src: &str) -> Vec<String> {
         result.extend(extract_type_identifiers(child, src));
     }
     result
+}
+
+/// Extract a function's parameters as "name: Type" or "Type" strings.
+fn extract_function_params(func: Node, src: &str) -> Vec<String> {
+    let bytes = src.as_bytes();
+    let mut params = Vec::new();
+
+    if let Some(param_list) = func.child_by_field_name("parameters") {
+        let mut cursor = param_list.walk();
+        for child in param_list.children(&mut cursor) {
+            match child.kind() {
+                // regular param: e.g. `x: i32`
+                "parameter" => {
+                    let name = child
+                        .child_by_field_name("pattern")
+                        .and_then(|n| n.utf8_text(bytes).ok())
+                        .map(|s| s.trim().to_string());
+                    let ty = child
+                        .child_by_field_name("type")
+                        .and_then(|n| n.utf8_text(bytes).ok())
+                        .map(|s| s.trim().to_string());
+
+                    let rendered = match (name, ty) {
+                        (Some(n), Some(t)) => format!("{n}: {t}"),
+                        (Some(n), None) => n,
+                        (None, Some(t)) => t,
+                        (None, None) => continue,
+                    };
+                    params.push(rendered);
+                }
+                // `self`, `&self`, `&mut self`
+                "self_parameter" => {
+                    if let Ok(text) = child.utf8_text(bytes) {
+                        params.push(text.trim().to_string());
+                    }
+                }
+                // ignore commas etc.
+                _ => {}
+            }
+        }
+    }
+
+    params
+}
+
+/// Extract a function's return type as a string, if present.
+fn extract_function_return_type(func: Node, src: &str) -> Option<String> {
+    let bytes = src.as_bytes();
+    let ret_node = func.child_by_field_name("return_type")?;
+    // In tree-sitter-rust, `return_type` usually looks like `-> Type`
+    // So strip the leading `->` if present.
+    let text = ret_node.utf8_text(bytes).ok()?.trim().to_string();
+    let stripped = text
+        .strip_prefix("->")
+        .map(|s| s.trim().to_string())
+        .unwrap_or(text);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped)
+    }
 }
 
 /// Extract the first-line doc comment (`/// ...`) preceding `item`, if any.
